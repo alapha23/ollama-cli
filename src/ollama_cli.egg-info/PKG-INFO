@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: ollama-cli
+Version: 3.0.0
+Summary: A powerful, commercially-viable CLI for local Ollama LLMs
+Author-email: Gemini CLI <gemini@example.com>
+Requires-Python: >=3.8
+Requires-Dist: requests
+Requires-Dist: rich
+Requires-Dist: prompt_toolkit

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ollama-cli"
+version = "3.0.0"
+description = "A powerful, commercially-viable CLI for local Ollama LLMs"
+authors = [
+    { name = "Gemini CLI", email = "gemini@example.com" }
+]
+dependencies = [
+    "requests",
+    "rich",
+    "prompt_toolkit",
+]
+requires-python = ">=3.8"
+
+[project.scripts]
+ollama-cli = "ollama_cli.main:main"
