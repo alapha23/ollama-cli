@@ -30,7 +30,7 @@ def generate_image(prompt: str) -> str:
         # Based on the user's previous generate_image.py, but using the configured URL
         workflow = {
             "1": {
-                "inputs": {"ckpt_name": "dreamshaper_8.safetensors"},
+                "inputs": {"ckpt_name": "dreamshaper_8_pruned.safetensors"},
                 "class_type": "CheckpointLoaderSimple"
             },
             "2": {

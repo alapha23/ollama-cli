@@ -79,6 +79,20 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
         pip3 install -r requirements.txt
         echo "✅ ComfyUI installed."
         
+        # 5. Download Image Generation Model
+        echo ""
+        echo "[*] Downloading Image Generation Model (DreamShaper 8)..."
+        MODEL_DIR="models/checkpoints"
+        mkdir -p "$MODEL_DIR"
+        MODEL_PATH="$MODEL_DIR/dreamshaper_8.safetensors"
+        if [ ! -f "$MODEL_PATH" ]; then
+            echo "    This may take a few minutes (approx. 2GB)..."
+            curl -L "https://huggingface.co/Lykon/DreamShaper/resolve/main/DreamShaper_8_pruned.safetensors" -o "$MODEL_PATH"
+            echo "✅ Model downloaded."
+        else
+            echo "✅ Model already exists."
+        fi
+
         echo ""
         echo "[!] To use Image Generation, you must start ComfyUI:"
         echo "    cd $INSTALL_DIR"
