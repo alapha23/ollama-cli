@@ -13,6 +13,7 @@ dependencies = [
     "requests",
     "rich",
     "prompt_toolkit",
+    "websocket-client",
 ]
 requires-python = ">=3.8"
 

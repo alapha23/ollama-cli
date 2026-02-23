@@ -4,16 +4,12 @@ import sys
 import requests
 import json
 import random
+import uuid
+import time
 from .base import tool
 from ..core.config import load_config
+from ..ui.formatter import print_status, console
 
-@tool(
-    name="generate_image",
-    description="Generate an image using the local Stable Diffusion workflow (ComfyUI)",
-    parameters={
-        "prompt": {"type": "string", "description": "The image description"}
-    }
-)
 @tool(
     name="get_comfy_status",
     description="Check the status of image generation jobs or the ComfyUI queue",
@@ -65,7 +61,7 @@ def get_comfy_status(prompt_id: str = "") -> str:
     }
 )
 def generate_image(prompt: str) -> str:
-    """Invokes the ComfyUI API directly with a predefined workflow"""
+    """Invokes the ComfyUI API with WebSocket for realtime progress tracking"""
     config = load_config()
     comfy_url = config.get("comfy_url", "http://127.0.0.1:8188").rstrip("/")
     image_model = config.get("image_model", "dreamshaper_8_pruned.safetensors")
@@ -75,13 +71,14 @@ def generate_image(prompt: str) -> str:
     if "xl" in image_model.lower():
         width, height = (1024, 1024)
 
+    client_id = str(uuid.uuid4())
+    
     try:
-        # Check if ComfyUI is running
-        try:
-            requests.get(comfy_url, timeout=2)
-        except:
-            return f"Error: ComfyUI server ({comfy_url}) appears to be down. Please start it first or configure the URL with '/config comfy <url>'."
+        import websocket
+    except ImportError:
+        return "Error: 'websocket-client' not installed. Please run 'pip install websocket-client'."
 
+    try:
         # Define the workflow directly
         workflow = {
             "1": {
@@ -129,52 +126,78 @@ def generate_image(prompt: str) -> str:
             }
         }
         
-        payload = {"prompt": workflow}
+        # Connect to WebSocket
+        ws_url = comfy_url.replace("http://", "ws://").replace("https://", "wss://") + f"/ws?clientId={client_id}"
+        ws = websocket.WebSocket()
+        ws.connect(ws_url)
+        
+        # Queue the prompt
+        payload = {"prompt": workflow, "client_id": client_id}
         response = requests.post(f"{comfy_url}/prompt", json=payload, timeout=10)
         
-        if response.status_code == 200:
-            data = response.json()
-            prompt_id = data.get('prompt_id', 'unknown')
+        if response.status_code != 200:
+            return f"Error from ComfyUI: {response.status_code} - {response.text}"
             
-            # Start monitoring for the new image
-            output_path = os.path.expanduser(config.get("comfy_output_path", "~/ComfyUI/output"))
+        data = response.json()
+        prompt_id = data.get('prompt_id')
+        
+        print_status(f"Realtime monitoring active (Prompt ID: {prompt_id})")
+        
+        found_file = None
+        from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
+        
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(),
+            console=console
+        ) as progress:
+            task = progress.add_task("[cyan]Queued...", total=20) # 20 steps default
             
-            # Helper to find the newest file with our prefix
-            def find_newest_image():
-                import glob
-                files = glob.glob(os.path.join(output_path, "ollama_cli_*"))
-                if not files: return None
-                return max(files, key=os.path.getctime)
-
-            initial_newest = find_newest_image()
-            
-            # Polling loop (max 60 seconds)
-            import time
-            found_file = None
-            for _ in range(30):
-                # Check status via API
-                status_check = get_comfy_status(prompt_id)
-                if "Completed" in status_check:
-                    # Give filesystem a moment to sync
-                    time.sleep(1)
-                    current_newest = find_newest_image()
-                    if current_newest and current_newest != initial_newest:
-                        found_file = current_newest
-                        break
+            while True:
+                out = ws.recv()
+                if not out: break
                 
-                time.sleep(2)
-            
-            if found_file:
-                # Open the image automatically
-                if sys.platform == "darwin":
-                    subprocess.run(["open", found_file])
+                if isinstance(out, str):
+                    msg = json.loads(out)
+                    if msg['type'] == 'progress':
+                        p_data = msg['data']
+                        if p_data['prompt_id'] == prompt_id:
+                            progress.update(task, description="[green]Sampling...", completed=p_data['value'], total=p_data['max'])
+                    
+                    if msg['type'] == 'executing':
+                        e_data = msg['data']
+                        if e_data['prompt_id'] == prompt_id:
+                            node = e_data['node']
+                            if node is None: # Execution finished
+                                break
+                            # Update description based on node type if possible (or just generic)
+                            progress.update(task, description=f"[yellow]Node {node}...")
+                    
+                    if msg['type'] == 'executed':
+                        ex_data = msg['data']
+                        if ex_data['prompt_id'] == prompt_id:
+                            # We can extract the filename here!
+                            if 'output' in ex_data and 'images' in ex_data['output']:
+                                images = ex_data['output']['images']
+                                if images:
+                                    img_name = images[0]['filename']
+                                    output_path = os.path.expanduser(config.get("comfy_output_path", "~/ComfyUI/output"))
+                                    found_file = os.path.join(output_path, img_name)
                 else:
-                    subprocess.run(["xdg-open", found_file])
-                return f"Image generation complete!\nSaved to: {found_file}\nOpening image now..."
-            
-            return f"Image generation queued successfully on {comfy_url}.\nPrompt ID: {prompt_id}\nMonitoring timed out, but the image should appear in {output_path} soon."
-        else:
-            return f"Error form ComfyUI: {response.status_code} - {response.text}"
+                    continue # Binary data (previews) ignored for now
+        
+        ws.close()
+        
+        if found_file and os.path.exists(found_file):
+            if sys.platform == "darwin":
+                subprocess.run(["open", found_file])
+            else:
+                subprocess.run(["xdg-open", found_file])
+            return f"Image generation complete!\nSaved to: {found_file}\nOpening image now..."
+        
+        return f"Image generation finished, but could not locate file automatically. Prompt ID: {prompt_id}"
             
     except Exception as e:
         return f"Error generating image: {str(e)}"
