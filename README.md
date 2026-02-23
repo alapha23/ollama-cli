@@ -38,6 +38,9 @@ Run the CLI:
 ollama-cli
 ```
 
+### Full Documentation
+For detailed information on architecture, tool list, and advanced configurations, see **[DOCUMENTATION.md](./DOCUMENTATION.md)**.
+
 ### Slash Commands
 - `/quit` - Exit the CLI.
 - `/clear` - Clear conversation history.
