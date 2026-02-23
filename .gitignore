@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ollama-cli-history
+.ollama-cli-kb.json
+.ollama-cli/
+*.egg-info/
+dist/
+build/
+.DS_Store
