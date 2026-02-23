@@ -27,7 +27,9 @@ def read_file(path: str) -> str:
 def write_file(path: str, content: str) -> str:
     try:
         expanded_path = os.path.expanduser(path)
-        os.makedirs(os.path.dirname(expanded_path), exist_ok=True)
+        dir_name = os.path.dirname(expanded_path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
         with open(expanded_path, 'w') as f:
             f.write(content)
         return f"Successfully written to {path}"
