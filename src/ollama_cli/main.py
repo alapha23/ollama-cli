@@ -62,9 +62,14 @@ You have access to a variety of tools to help you complete tasks.
 
 CRITICAL RULES:
 1. When you need to use a tool, you MUST use the EXACT format below.
-2. Output ONLY the tool call. DO NOT explain what you are doing.
-3. DO NOT repeat a tool call if you have already received a result for it.
-4. If you have the answer, just give it. Do not use tools unless necessary.
+2. For IMAGE tasks:
+   - To CREATE/GENERATE a new image: use `generate_image` tool ONLY
+   - To ANALYZE an existing image file: use `analyze_image` tool
+3. Output ONLY the tool call. DO NOT explain what you are doing.
+4. DO NOT repeat a tool call if you have already received a result for it.
+5. If you have the answer, just give it. Do not use tools unless necessary.
+6. After a tool succeeds (e.g., image generated, file written), respond with a brief confirmation. DO NOT call additional tools.
+7. DO NOT try to read binary files (images, audio) with read_file - they are not text.
 
 <tool_call>
 <tool_name>name_of_tool</tool_name>
@@ -115,13 +120,29 @@ You can call multiple tools in one response by repeating the block above."""
   [blue]Filesystem:[/blue] read_file, write_file, list_directory, grep_search, get_tree
   [blue]Code & Python:[/blue] run_python, replace_text, code_analyze_file, run_linter
   [blue]Web:[/blue] web_search, read_url
-  [blue]Media:[/blue] generate_image, speak_text, get_comfy_status
+  [blue]Media:[/blue] generate_image, speak_text, get_comfy_status, analyze_image
   [blue]Knowledge:[/blue] kb_add, kb_search, remember_fact, recall_facts, clear_memory
+
+[bold]Media Features (Usage Examples):[/bold]
+  [green]Image Generation:[/green]
+    "create an image of a sunset over mountains"
+    "generate a 1024x768 image of a cat wearing a hat"
+  
+  [green]Image Analysis:[/green]
+    "analyze image.jpg and describe what you see"
+    "what's in /path/to/photo.png?"
+  
+  [green]Text-to-Speech:[/green]
+    "speak: Hello, this is a test"
+    "read this text aloud: [your text]"
 
 [bold]Integrations:[/bold]
   /mcp connect <name> <cmd> [args] - Connect MCP server
   /lsp start <lang> [path]         - Start LSP server
   /notify setup <topic>            - Setup ntfy.sh remote control
+  
+  [green]Notifications:[/green]
+    After setup, send commands via: curl -d "your prompt" ntfy.sh/your-topic
 
 [bold]Configuration:[/bold]
   /config ollama <url>       - Set Ollama server URL
@@ -140,6 +161,7 @@ You can call multiple tools in one response by repeating the block above."""
   [blue]ComfyUI URL:[/blue] {cfg.get('comfy_url')}
   [blue]Comfy Output:[/blue] {cfg.get('comfy_output_path')}
   [blue]Image Model:[/blue] {cfg.get('image_model')}
+  [blue]Vision Model:[/blue]{cfg.get('vision_model')}
   [blue]Piper Path:[/blue]  {cfg.get('piper', {}).get('path')}
   [blue]Piper Model:[/blue] {cfg.get('piper', {}).get('model')}
   [blue]Default Model:[/blue] {cfg.get('default_model')}
@@ -155,6 +177,9 @@ You can call multiple tools in one response by repeating the block above."""
                     elif subcmd == 'comfy':
                         update_config("comfy_url", val)
                         print_status(f"ComfyUI URL updated to: {val}")
+                    elif subcmd == 'vision':
+                        update_config("vision_model", val)
+                        print_status(f"Vision model updated to: {val}")
                     elif subcmd == 'comfy_output':
                         update_config("comfy_output_path", val)
                         print_status(f"ComfyUI output path updated to: {val}")
@@ -262,8 +287,18 @@ You can call multiple tools in one response by repeating the block above."""
             if not self.available_models:
                 print_error("No models found. Make sure Ollama is running.")
             else:
-                if self.current_model not in self.available_models:
+                # Prefer config default, then llama3.2, then first available
+                pref_model = self.config.get("default_model", "llama3.2")
+                found_pref = False
+                for am in self.available_models:
+                    if pref_model in am:
+                        self.current_model = am
+                        found_pref = True
+                        break
+                
+                if not found_pref:
                     self.current_model = self.available_models[0]
+                    
                 print_status(f"Using model: [bold green]{self.current_model}[/bold green]")
         except Exception as e:
             print_error(f"Could not connect to Ollama: {e}")
@@ -285,6 +320,15 @@ You can call multiple tools in one response by repeating the block above."""
                 continue
                 
             self.messages.append({"role": "user", "content": user_input})
+            
+            # Auto-select best model for the task (Reasoning model)
+            # This happens before the chat cycle, so the first response is from the right model
+            if not self.current_model.startswith("llama3.2-vision"): # Only auto-switch away from vision model if it's currently selected
+                task_model = self.client.select_best_model(user_input, self.available_models, self.current_model)
+                if task_model != self.current_model:
+                    print_status(f"Switching to [bold green]{task_model}[/bold green] for reasoning...")
+                    self.current_model = task_model
+                
             self.process_chat_cycle()
 
     def process_chat_cycle(self):
@@ -314,6 +358,29 @@ You can call multiple tools in one response by repeating the block above."""
                     if call_key in executed_tool_calls:
                         print_status(f"Skipping duplicate tool call: [dim]{name}[/dim]")
                         continue
+                    
+                    # Specific prevention for vision model loops: same tool + same file + already called once
+                    if name == "analyze_image":
+                        img_path = params.get("image_path")
+                        if img_path:
+                            vision_key = f"vision_path:{img_path}"
+                            if vision_key in executed_tool_calls:
+                                # We've already queried this image in this cycle.
+                                # Check if the prompt is suspiciously similar to previous content
+                                prompt = params.get("prompt", "").lower()
+                                
+                                # If prompt is long or contains parts of the previous messages, block it
+                                is_suspicious = len(prompt) > 30
+                                for msg in self.messages:
+                                    if msg["role"] == "assistant" and prompt in msg["content"].lower():
+                                        is_suspicious = True
+                                        break
+                                
+                                if is_suspicious:
+                                    print_status(f"Blocking suspicious vision loop for: [dim]{img_path}[/dim]")
+                                    continue
+                            executed_tool_calls.add(vision_key)
+
                     executed_tool_calls.add(call_key)
                     
                     result = self.execute_tool(name, params)
@@ -326,7 +393,8 @@ You can call multiple tools in one response by repeating the block above."""
                     break
                     
                 # Add all results to conversation
-                self.messages.append({"role": "user", "content": "\n\n".join(results) + "\n\nTool execution complete. If the task is finished, provide a final response to the user. Do not repeat the tool call."})
+                feedback = "\n\n".join(results) + "\n\n[SYSTEM]: Tool execution is complete. Use the results above to provide your final response to the user. DO NOT call any tools again to process these results or to summarize them. If you have the information needed, answer the user now."
+                self.messages.append({"role": "user", "content": feedback})
                 
                 # If we made it here, loop again to let the model process results
                 
@@ -343,9 +411,16 @@ You can call multiple tools in one response by repeating the block above."""
         if tc_blocks:
             for block in tc_blocks:
                 if not block.strip(): continue
+                name = None
                 # Try to find tool_name tag (handles unclosed)
                 name_match = re.search(r'<tool_name>(.*?)(?:</tool_name>|$)', block, re.DOTALL)
-                name = name_match.group(1).strip() if name_match else None
+                if name_match:
+                    name = name_match.group(1).strip()
+                else:
+                    # Fallback: tool name might be naked after <tool_call>
+                    first_line = block.strip().split('\n')[0].strip()
+                    if first_line in registry.tools:
+                        name = first_line
                 
                 # Try to find parameters tag (handles unclosed)
                 params_match = re.search(r'<parameters>(.*?)(?:</parameters>|$)', block, re.DOTALL)
@@ -367,12 +442,13 @@ You can call multiple tools in one response by repeating the block above."""
         if not calls:
             for tool_name in registry.tools.keys():
                 # Handle <tool_name ... /> or <tool_name ... >
-                attr_pattern = fr'<{tool_name}\s+(.*?)[\s/]*>'
+                attr_pattern = fr'<{tool_name}\s+([^>]*?)[\s/]*>'
                 attr_matches = re.findall(attr_pattern, text, re.DOTALL)
                 for attr_str in attr_matches:
                     attrs = {}
-                    kv_pairs = re.findall(r'(\w+)\s*=\s*["\'](.*?)["\']', attr_str)
-                    for k, v in kv_pairs:
+                    # Find all pairs of key="value" or key='value'
+                    kv_pairs = re.findall(r'(\w+)\s*=\s*(["\'])(.*?)\2', attr_str) # capture the quote type
+                    for k, _, v in kv_pairs: # k, _, v to ignore the quote type
                         attrs[k] = v
                     if attrs:
                         calls.append((tool_name, attrs))
@@ -396,6 +472,46 @@ You can call multiple tools in one response by repeating the block above."""
                         calls.append((tool_name, json.loads(json_str.strip())))
                     except:
                         pass
+        
+        # 4. Super-fallback: Line-by-line heuristic for "naked" calls (e.g. llama3.2:1b style)
+        if not calls:
+            lines = text.strip().split('\n')
+            current_tool = None
+            current_params = {}
+            for line in lines:
+                line = line.strip()
+                if not line: continue
+                
+                # Look for a tool name at the start of the line (e.g. 'analyze_image path=...')
+                # We use a word-boundary check to ensure it's the full tool name
+                clean_line = line.lower().replace('tool_call', '').strip()
+                match = re.search(r'^(\w+)', clean_line)
+                t_name = match.group(1) if match else None
+                
+                if t_name in registry.tools:
+                    # If we already had a tool, save it before starting new one
+                    if current_tool and current_params:
+                        calls.append((current_tool, current_params))
+                        current_params = {}
+                    current_tool = t_name
+                    # Fall through to check for params on the same line
+                
+                # Look for key="value" or key='value' or key: value
+                kv_match = re.findall(r'(\w+)\s*[=:]\s*(["\'])(.*?)\2', line)
+                if kv_match and current_tool:
+                    for k, _, v in kv_match:
+                        # Map common misnamed parameters
+                        if k == 'path' and current_tool == 'analyze_image': k = 'image_path'
+                        current_params[k] = v
+                elif current_tool:
+                    # Try simplified key=value without quotes
+                    kv_simple = re.findall(r'(\w+)\s*=\s*([^\s]+)', line)
+                    for k, v in kv_simple:
+                        if k == 'path' and current_tool == 'analyze_image': k = 'image_path'
+                        current_params[k] = v
+            
+            if current_tool and current_params:
+                calls.append((current_tool, current_params))
 
         return calls
 

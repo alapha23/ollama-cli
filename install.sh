@@ -48,7 +48,18 @@ else
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo "[*] Installing Ollama..."
         curl -fsSL https://ollama.com/install.sh | sh
-        echo "✅ Ollama installed."
+        echo "[*] Waiting for Ollama to be available..."
+        sleep 3
+        # Try to find ollama in common locations
+        if [ -f "/Applications/Ollama.app/Contents/Resources/ollama" ]; then
+            export PATH="/Applications/Ollama.app/Contents/Resources:$PATH"
+        fi
+        echo "[*] Pulling models..."
+        ollama pull llama3.2-vision
+        ollama pull mistral:latest
+        ollama pull llama3.2:3b
+        ollama pull qwen2.5-coder:7b
+        echo "✅ Ollama installed with models."
     else
         echo "Skipping Ollama installation."
     fi
@@ -127,10 +138,23 @@ with open(config_path, 'w') as f:
     json.dump(config, f, indent=2)
 "
 
+    # Start ComfyUI as daemon
     echo ""
-    echo "[!] To use Image Generation, you must start ComfyUI:"
-    echo "    cd $INSTALL_DIR"
-    echo "    python3 main.py"
+    read -p "Start ComfyUI as background service now? (y/n) " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "[*] Starting ComfyUI in background..."
+        mkdir -p "$HOME/.ollama-cli"
+        cd "$INSTALL_DIR"
+        nohup python3 main.py > "$HOME/.ollama-cli/comfyui.log" 2>&1 &
+        echo $! > "$HOME/.ollama-cli/comfyui.pid"
+        echo "✅ ComfyUI started (PID: $(cat $HOME/.ollama-cli/comfyui.pid))"
+        echo "    Log: $HOME/.ollama-cli/comfyui.log"
+        echo "    Stop: kill \$(cat $HOME/.ollama-cli/comfyui.pid)"
+    else
+        echo "[!] To start ComfyUI manually:"
+        echo "    cd $INSTALL_DIR && python3 main.py"
+    fi
     
     # Update config to point to ComfyUI
     python3 -c "
@@ -179,14 +203,19 @@ else
             URL="https://github.com/rhasspy/piper/releases/download/v1.2.0/piper_amd64.tar.gz"
         fi
         
-        curl -L "$URL" -o piper.tar.gz
-        if [ ! -s piper.tar.gz ]; then
-            echo "Error: Download failed."
+        curl -L -o piper.tar.gz "$URL"
+        if [ ! -s piper.tar.gz ] || ! tar -tzf piper.tar.gz &>/dev/null; then
+            echo "Error: Download failed or invalid archive."
+            rm -f piper.tar.gz
         else
             tar -xzf piper.tar.gz
-            mv piper/piper .
-            mv piper/lib* . || true
+            if [ -f "piper/piper" ]; then
+                mv piper/piper ./piper_bin
+                mv piper/lib* . 2>/dev/null || true
+                chmod +x piper_bin
+            fi
             rm -rf piper piper.tar.gz
+            [ -f piper_bin ] && mv piper_bin piper
             echo "✅ Piper binary installed."
         fi
 

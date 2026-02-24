@@ -29,7 +29,8 @@ DEFAULT_CONFIG = {
         "topic": "",
         "server": "https://ntfy.sh"
     },
-    "default_model": "llama3.2"
+    "default_model": "llama3.2",
+    "vision_model": "llama3.2-vision"
 }
 
 def load_config():

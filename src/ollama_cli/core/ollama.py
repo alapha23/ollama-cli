@@ -2,6 +2,7 @@ import json
 import requests
 import subprocess
 import sys
+import os
 from typing import List, Dict, Optional, Generator
 
 class OllamaClient:
@@ -16,21 +17,26 @@ class OllamaClient:
         self.chat_url = f"{self.base_url}/api/chat"
         self.list_url = f"{self.base_url}/api/tags"
 
-    def get_available_models(self) -> List[str]:
+    def get_available_models(self, include_vision: bool = False) -> List[str]:
         """Get list of models available in Ollama"""
         try:
             # Try API first
             response = requests.get(self.list_url, timeout=5)
             if response.status_code == 200:
                 data = response.json()
-                return [m['name'] for m in data.get('models', [])]
+                models = [m['name'] for m in data.get('models', [])]
+                if not include_vision:
+                    models = [m for m in models if "vision" not in m.lower()]
+                return models
             
             # Fallback to CLI
             result = subprocess.run("ollama list", shell=True, capture_output=True, text=True, timeout=5)
             models = []
             for line in result.stdout.split('\n')[1:]:  # Skip header
                 if line.strip():
-                    models.append(line.split()[0])
+                    model_name = line.split()[0]
+                    if include_vision or "vision" not in model_name.lower():
+                        models.append(model_name)
             return models
         except Exception:
             return []
@@ -42,7 +48,7 @@ class OllamaClient:
                 "model": model,
                 "messages": messages,
                 "stream": stream
-            }, stream=stream, timeout=60)
+            }, stream=stream, timeout=600)
             response.raise_for_status()
             
             full_response = ""
@@ -65,23 +71,72 @@ class OllamaClient:
             raise Exception(f"Error calling Ollama: {str(e)}")
 
     def select_best_model(self, user_input: str, available_models: List[str], default_model: str) -> str:
-        """Select best model based on task type"""
+        """Select best reasoning model based on task type"""
         if not available_models:
             return default_model
             
-        # Model preferences
+        # Model preferences for REASONING (prefer larger/smarter models)
         code_models = ["qwen2.5-coder", "mistral-nemo", "codellama", "deepseek-coder"]
-        general_models = ["llama3.2", "llama3.1", "mistral"]
+        general_models = ["mistral", "llama3.1", "llama3.2:3b", "llama3.2:latest", "llama3", "llama3.2"]
         
-        # Simple heuristic
+        user_input_lower = user_input.lower()
+        
+        # Check if it's a coding task
         code_keywords = ['code', 'script', 'program', 'function', 'debug', 'python', 'javascript']
-        is_code_task = any(k in user_input.lower() for k in code_keywords)
+        is_code_task = any(k in user_input_lower for k in code_keywords)
         
         target_list = code_models if is_code_task else general_models
         
+        # Filter out vision models
+        reasoning_pool = [m for m in available_models if "vision" not in m.lower()]
+        if not reasoning_pool:
+            return available_models[0]
+
         for target in target_list:
-            for available in available_models:
+            for available in reasoning_pool:
                 if target in available.lower():
+                    # If it's a 1b model, only pick it if no other preferred models are available
+                    if ":1b" in available.lower() and len(reasoning_pool) > 1:
+                        continue
                     return available
                     
-        return available_models[0] if available_models else default_model
+        # Fallback to a non-vision model, trying to avoid 1b
+        for available in reasoning_pool:
+            if ":1b" not in available.lower():
+                return available
+
+        return reasoning_pool[0]
+
+    def describe_image(self, image_path: str, prompt: str = "What is in this image?", model: str = "llama3.2-vision") -> str:
+        """Analyze an image using a vision model"""
+        import base64
+        
+        # Auto-download model if missing
+        available = self.get_available_models(include_vision=True)
+        if not any(model in m for m in available):
+            print(f"[*] Vision model '{model}' not found. Downloading...")
+            try:
+                subprocess.run(f"ollama pull {model}", shell=True, check=True)
+            except Exception as e:
+                return f"Error downloading vision model: {e}"
+
+        try:
+            expanded_path = os.path.expanduser(image_path)
+            with open(expanded_path, "rb") as f:
+                img_data = base64.b64encode(f.read()).decode('utf-8')
+            
+            response = requests.post(self.chat_url, json={
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt,
+                        "images": [img_data]
+                    }
+                ],
+                "stream": False
+            }, timeout=600)
+            response.raise_for_status()
+            return response.json().get("message", {}).get("content", "Error: No description returned.")
+        except Exception as e:
+            return f"Error analyzing image: {str(e)}"

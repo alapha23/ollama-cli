@@ -57,18 +57,19 @@ def get_comfy_status(prompt_id: str = "") -> str:
     name="generate_image",
     description="Generate an image using the local Stable Diffusion workflow (ComfyUI)",
     parameters={
-        "prompt": {"type": "string", "description": "The image description"}
+        "prompt": {"type": "string", "description": "The image description"},
+        "width": {"type": "integer", "description": "Image width in pixels (default: 512)", "optional": True},
+        "height": {"type": "integer", "description": "Image height in pixels (default: 512)", "optional": True}
     }
 )
-def generate_image(prompt: str) -> str:
+def generate_image(prompt: str, width: int = 512, height: int = 512) -> str:
     """Invokes the ComfyUI API with WebSocket for realtime progress tracking"""
     config = load_config()
     comfy_url = config.get("comfy_url", "http://127.0.0.1:8188").rstrip("/")
     image_model = config.get("image_model", "dreamshaper_8_pruned.safetensors")
     
-    # Determine dimensions (SDXL prefers 1024x1024)
-    width, height = (512, 512)
-    if "xl" in image_model.lower():
+    # Override defaults for SDXL models if user didn't specify
+    if "xl" in image_model.lower() and width == 512 and height == 512:
         width, height = (1024, 1024)
 
     client_id = str(uuid.uuid4())
@@ -203,6 +204,25 @@ def generate_image(prompt: str) -> str:
         return f"Error generating image: {str(e)}"
 
 @tool(
+    name="analyze_image",
+    description="Analyze or describe a local image file using AI vision",
+    parameters={
+        "image_path": {"type": "string", "description": "Path to the image file"},
+        "prompt": {"type": "string", "description": "What to ask about the image", "default": "Describe this image in detail."}
+    }
+)
+def analyze_image(image_path: str, prompt: str = "Describe this image in detail.") -> str:
+    """Invokes the Ollama vision API"""
+    config = load_config()
+    vision_model = config.get("vision_model", "llama3.2-vision")
+    
+    from ..core.ollama import OllamaClient
+    client = OllamaClient(config.get("ollama_url"))
+    
+    print_status(f"Analyzing image with {vision_model}...")
+    return client.describe_image(image_path, prompt, model=vision_model)
+
+@tool(
     name="speak_text",
     description="Convert text to speech using Piper TTS (high quality)",
     parameters={
@@ -290,4 +310,4 @@ else:
         except Exception as e:
             return f"Error using 'say': {e}"
             
-    return "No compatible TTS engine found. Please run the installer."
+    return "TTS engine not found. Please run the installer to set up Piper or Kokoro."
