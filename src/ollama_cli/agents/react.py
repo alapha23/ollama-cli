@@ -124,6 +124,22 @@ def parse_tool_calls(text: str, allowed_tools: List[str] = None) -> List[tuple]:
                             attrs[k] = int(v)
                     calls.append((tool_name, attrs))
 
+    # 5. Nested XML: <tool_name><param>value</param>...</tool_name>
+    if not calls:
+        for tool_name in tool_names:
+            body_pattern = fr'<{tool_name}>\s*(.*?)\s*</{tool_name}>'
+            for body in re.findall(body_pattern, text, re.DOTALL):
+                # Look for <key>value</key> pairs inside the body
+                params = {}
+                for k, v in re.findall(r'<(\w+)>(.*?)</\1>', body, re.DOTALL):
+                    v = v.strip()
+                    if v.isdigit():
+                        params[k] = int(v)
+                    else:
+                        params[k] = v
+                if params:
+                    calls.append((tool_name, params))
+
     return calls
 
 
