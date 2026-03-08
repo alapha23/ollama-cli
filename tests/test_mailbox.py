@@ -92,15 +92,23 @@ class TestMailbox(unittest.TestCase):
         self.mb.send_signal("agent-007", "stop")
         self.assertEqual(self.mb.check_signal("agent-007"), "stop")
 
-    def test_signal_cleared_by_new_step(self):
+    def test_signal_cleared_by_ack(self):
         self.mb.create("agent-008", "task", "model")
         self.mb.send_signal("agent-008", "stop")
         self.assertEqual(self.mb.check_signal("agent-008"), "stop")
 
-        # Agent writes a new step after seeing the signal
-        self.mb.write_step("agent-008", "think", content="acknowledged stop, summarizing")
-        # Signal should no longer be visible (new step is after it)
+        # Agent acknowledges the signal
+        self.mb.clear_signal("agent-008")
         self.assertIsNone(self.mb.check_signal("agent-008"))
+
+    def test_signal_persists_through_steps(self):
+        self.mb.create("agent-008b", "task", "model")
+        self.mb.send_signal("agent-008b", "stop")
+        # Agent writes more steps but doesn't ack
+        self.mb.write_step("agent-008b", "think", content="still going")
+        self.mb.write_step("agent-008b", "observe", content="result")
+        # Signal should still be visible
+        self.assertEqual(self.mb.check_signal("agent-008b"), "stop")
 
     def test_list_agents(self):
         self.mb.create("agent-a", "task1", "model")
