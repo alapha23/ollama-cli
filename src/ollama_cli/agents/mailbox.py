@@ -110,18 +110,23 @@ class Mailbox:
         """Send a signal to a running agent (e.g. 'stop')."""
         self.write_step(agent_id, "signal", signal=signal)
 
+    def clear_signal(self, agent_id: str):
+        """Mark the signal as consumed by writing an ack step."""
+        self.write_step(agent_id, "signal_ack")
+
     def check_signal(self, agent_id: str) -> Optional[str]:
         """Check if there's a pending signal for this agent.
 
         Called by the subagent between ReACT steps.
-        Returns the signal string (e.g. 'stop') or None.
+        Returns the most recent signal string (e.g. 'stop') or None.
+        A signal_ack step clears all prior signals.
         """
         steps = self.read_steps(agent_id)
         for step in reversed(steps):
+            if step.get("step") == "signal_ack":
+                return None  # signal was consumed
             if step.get("step") == "signal":
                 return step.get("signal")
-            if step.get("step") in ("think", "act", "observe", "init"):
-                break
         return None
 
     def list_agents(self) -> list:
